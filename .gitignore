@@ -1,0 +1,3 @@
+.venv/
+pose_landmarker.task
+__pycache__/
