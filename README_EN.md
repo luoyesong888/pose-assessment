@@ -1,16 +1,18 @@
 # KinetiQ
 
-KinetiQ is an AI-assisted sports rehabilitation screening app built with Streamlit. It analyzes front and side posture photos with MediaPipe, infers muscle-function hypotheses and ACL risk, then uses DeepSeek to generate therapist-facing rehab reports.
+KinetiQ is an AI-assisted sports rehabilitation screening app built with Streamlit. It recognizes front, back, side, forward-bend, and other pose photos, retrieves same-type MPII landmark cases from a multi-view local RAG index, describes the visible MediaPipe geometry appropriate to each capture type, and uses DeepSeek to generate therapist-facing reports. Static photos do not receive an ACL injury-risk grade.
 
 ## Features
 
 - Front and side photo upload
 - Annotated pose images
-- ACL risk stratification
+- ACL screening limits (dynamic testing required)
 - Kinetic-chain analysis
 - Muscle-function hypothesis mapping
 - DeepSeek-powered therapist reports
 - Patient archive and history search
+- Local posture RAG and post-analysis improvement priorities
+- User-confirmed low-load training plans
 - Markdown, HTML, and PDF export
 
 ## Why it stands out
@@ -26,7 +28,7 @@ KinetiQ is an AI-assisted sports rehabilitation screening app built with Streaml
 flowchart LR
     A[Upload photos] --> B[MediaPipe landmarks]
     B --> C[Pose metrics]
-    C --> D[Muscle hypotheses + ACL risk]
+    C --> D[Muscle hypotheses + screening limits]
     D --> E[DeepSeek report]
     E --> F[Archive + PDF/HTML export]
 ```
@@ -48,11 +50,13 @@ streamlit run main.py
 - `main.py`: Streamlit UI
 - `app_pipeline.py`: end-to-end assessment pipeline
 - `pose.py`: MediaPipe pose detection and annotated image generation
-- `analysis.py`: pose metrics, ACL risk, kinetic-chain summary
+- `analysis.py`: pose metrics, capture-quality gating, kinetic-chain summary, and ACL screening limits
 - `clinical_knowledge.py`: muscle mapping and report templates
 - `deepseek_client.py`: DeepSeek API client
 - `records_store.py`: patient archive storage
 - `report_export.py`: HTML and PDF export helpers
+- `posture_rag.py`: local vector and structural-similarity retrieval
+- `recommendation_engine.py`: explainable recommendations and confirmed plans
 
 ## Notes
 

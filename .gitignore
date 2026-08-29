@@ -2,3 +2,6 @@
 pose_landmarker.task
 __pycache__/
 data/
+tmp/
+output/
+.DS_Store

@@ -1,9 +1,11 @@
+import html
 import os
 
 import streamlit as st
-from app_pipeline import commit_assessment, process_assessment
+from app_pipeline import AssessmentInputError, commit_assessment, process_assessment
+from recommendation_engine import apply_confirmed_plan
 from report_export import build_report_html, build_report_pdf_bytes
-from records_store import load_store, search_patients, total_assessments
+from records_store import load_store, replace_assessment, save_store, search_patients, total_assessments
 
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
@@ -11,87 +13,135 @@ if "lang" not in st.session_state:
 LANG = {
     "zh": {
         "lang_btn": "EN",
-        "nav_home": "首页", "nav_flow": "流程", "nav_upload": "上传", "nav_about": "关于",
-        "badge": "AI 驱动 · 专业康复评估",
-        "title": "运动康复\n智能评估系统",
-        "subtitle": "上传正面与侧面照片，AI 自动分析姿态，生成专业康复建议报告。",
-        "chip1": "双视角分析", "chip2": "AI 报告", "chip3": "进度追踪",
-        "stat1_label": "视角", "stat1_val": "正面 + 侧面",
-        "stat2_label": "分析引擎", "stat2_val": "DeepSeek AI",
-        "stat3_label": "输出", "stat3_val": "结构化报告",
-        "flow_title": "使用流程",
-        "s1_title": "上传图片", "s1_desc": "提交正面与侧面全身照片，确保光线均匀、站姿自然放松。",
-        "s2_title": "AI 分析", "s2_desc": "系统自动识别关节关键点，检查肩线、骨盆与躯干平衡状态。",
-        "s3_title": "查看建议", "s3_desc": "生成可读性强的结构化报告，包含康复建议与后续跟踪指引。",
+        "subtitle": "上传站立、背面、侧面、前屈或其他体态照片，AI 自动识别照片类型并生成结构化评估。",
         "upload_title": "开始评估",
-        "profile_title": "患者信息",
-        "patient_ph": "输入患者姓名或编号",
-        "front_label": "正面全身照片",
-        "side_label": "侧面全身照片",
-        "upload_hint": "支持 JPG、PNG，单文件不超过 200MB",
-        "front_tip": "正对镜头站立，完整露出头部到足部",
-        "side_tip": "侧身站立，避免弯腰或转头",
+        "profile_title": "客户信息",
+        "name_label": "姓名",
+        "name_ph": "输入姓名",
+        "code_label": "客户编号",
+        "code_ph": "输入客户编号（可选）",
+        "gender_label": "性别",
+        "gender_options": ["未填写", "男", "女", "其他"],
+        "age_label": "年龄",
+        "height_label": "身高 (cm)",
+        "weight_label": "体重 (kg)",
+        "occupation_label": "职业 / 日常活动",
+        "occupation_options": ["未填写", "久坐办公", "站立工作", "体力劳动", "学生", "运动相关", "自由职业", "其他"],
+        "activity_label": "运动频率",
+        "activity_options": ["未填写", "几乎不运动", "每周 1-2 次", "每周 3-5 次", "几乎每天"],
+        "concerns_label": "主要诉求（可多选）",
+        "concern_options": ["高低肩", "圆肩驼背", "骨盆前倾", "膝超伸", "扁平足", "颈肩不适", "腰背不适", "体态美观", "运动表现", "其他"],
+        "pain_label": "疼痛或不适部位",
+        "pain_ph": "如无请留空",
+        "injury_label": "既往损伤 / 手术史",
+        "injury_ph": "如无请留空",
+        "front_label": "上传体态照片（可多选、角度和动作任意）",
+        "upload_hint": "支持 JPG、PNG；单张不超过 15MB，单次最多 6 张",
+        "front_tip": "支持正面、背面、侧面、斜向、前屈等姿态；尽量保持单人、主要关节清晰可见",
+        "waiting": "请至少上传一张体态照片",
         "analyze": "立即开始 AI 姿态分析",
-        "waiting": "请上传正面与侧面全身照片后开始分析",
         "ready": "照片已就绪，点击按钮开始分析",
-        "archive_title": "患者档案",
-        "archive_search": "搜索患者姓名 / 编号",
+        "archive_title": "客户档案",
+        "archive_search": "搜索客户姓名 / 编号",
         "archive_latest": "最新评估",
         "archive_load": "加载到主面板",
         "archive_empty": "暂无历史档案",
-        "archive_stats_patients": "患者数",
+        "archive_stats_patients": "客户数",
         "archive_stats_assessments": "评估数",
         "api_title": "DeepSeek 设置",
         "api_hint": "支持通过环境变量 DEEPSEEK_API_KEY 或侧边栏输入密钥。",
-        "patient_code_title": "患者编号",
-        "patient_code_ph": "输入患者编号（可选）",
         "report_section": "治疗师报告",
         "report_empty": "完成一次分析后，这里会显示专业报告。",
         "report_download": "下载报告",
         "report_generated": "报告已生成",
-        "footer": "KinetiQ · 基于 2D 姿态关键点的运动康复筛查 · 非医学诊断 · Powered by MediaPipe + DeepSeek AI",
+        "footer": "KinetiQ · 基于 2D 姿态关键点的体态康复筛查 · 非医学诊断 · Powered by MediaPipe + DeepSeek AI",
+        "guide_title": "拍摄指南",
+        "guide_sub": "标准照片，结果才可比较",
+        "guide_front": "任意站立角度",
+        "guide_side": "任意动作截图",
+        "guide_rule_1": "头部到足部完整入镜",
+        "guide_rule_2": "相机保持水平，避免俯拍",
+        "guide_rule_3": "光线均匀，轮廓无遮挡",
+        "guide_rule_4": "同一动作可上传多张便于交叉验证",
+        "analysis_title": "分析说明",
+        "analysis_sub": "本地筛查与证据边界",
+        "analysis_item_1": "自动识别视角与动作类型",
+        "analysis_item_2": "肩、髋、膝踝对线与动作对称性",
+        "analysis_item_3": "相似关键点 RAG 参考",
+        "analysis_item_4": "Markdown / HTML / PDF 报告",
+        "privacy_title": "隐私保护",
+        "privacy_text": "照片和档案保存在当前电脑，不向 Google 上传。静态照片不提供疾病诊断或 ACL 风险等级。",
+        "improvement_title": "改善重点建议",
+        "improvement_sub": "系统根据客观指标推荐，请选择 1–3 项作为下一阶段目标",
+        "improvement_select": "选择希望优先改善的目标",
+        "improvement_generate": "确认并生成训练计划",
+        "improvement_saved": "改善计划已保存到本次评估",
     },
     "en": {
         "lang_btn": "中文",
-        "nav_home": "Home", "nav_flow": "Flow", "nav_upload": "Upload", "nav_about": "About",
-        "badge": "AI Powered · Clinical Grade Assessment",
-        "title": "Sports Rehab\nAssessment",
-        "subtitle": "Upload front and side photos. AI analyzes posture and generates a professional recovery report.",
-        "chip1": "Dual View", "chip2": "AI Report", "chip3": "Progress Track",
-        "stat1_label": "Views", "stat1_val": "Front + Side",
-        "stat2_label": "Engine", "stat2_val": "DeepSeek AI",
-        "stat3_label": "Output", "stat3_val": "Structured Report",
-        "flow_title": "How It Works",
-        "s1_title": "Upload", "s1_desc": "Submit full-body front and side photos with even lighting and a relaxed natural stance.",
-        "s2_title": "AI Analysis", "s2_desc": "The system detects joint landmarks and checks shoulder line, pelvis and trunk balance.",
-        "s3_title": "Review", "s3_desc": "Receive a clear structured report with recovery recommendations and follow-up guidance.",
+        "subtitle": "Upload standing, back, side, forward-bend, or other pose photos. AI identifies each capture type and builds a structured report.",
         "upload_title": "Start Assessment",
-        "profile_title": "Patient Info",
-        "patient_ph": "Enter patient name or ID",
-        "front_label": "Front View Photo",
-        "side_label": "Side View Photo",
-        "upload_hint": "JPG or PNG, max 200MB per file",
-        "front_tip": "Stand facing the camera, full body in frame",
-        "side_tip": "Stand sideways, avoid bending or turning head",
+        "profile_title": "Client Info",
+        "name_label": "Name",
+        "name_ph": "Enter name",
+        "code_label": "Client ID",
+        "code_ph": "Enter client ID (optional)",
+        "gender_label": "Gender",
+        "gender_options": ["Not provided", "Male", "Female", "Other"],
+        "age_label": "Age",
+        "height_label": "Height (cm)",
+        "weight_label": "Weight (kg)",
+        "occupation_label": "Occupation / Daily Activity",
+        "occupation_options": ["Not provided", "Sedentary office", "Standing work", "Manual labor", "Student", "Sports-related", "Freelance", "Other"],
+        "activity_label": "Activity Level",
+        "activity_options": ["Not provided", "Rarely", "1-2 times/week", "3-5 times/week", "Almost daily"],
+        "concerns_label": "Main Concerns (multi-select)",
+        "concern_options": ["Uneven shoulders", "Rounded shoulders", "Anterior pelvic tilt", "Knee hyperextension", "Flat feet", "Neck/shoulder", "Low back", "Aesthetics", "Performance", "Other"],
+        "pain_label": "Pain / Discomfort",
+        "pain_ph": "Leave empty if none",
+        "injury_label": "Injury / Surgery History",
+        "injury_ph": "Leave empty if none",
+        "front_label": "Upload Posture Photos (multiple angles or actions)",
+        "upload_hint": "JPG or PNG; max 15MB each and 6 photos per assessment",
+        "front_tip": "Front, back, side, oblique, and movement snapshots are supported; keep one person and the major joints visible when possible",
+        "waiting": "Please upload at least one posture photo",
         "analyze": "Start AI Posture Analysis",
-        "waiting": "Please upload front and side photos to begin",
         "ready": "Photos ready — click to start analysis",
-        "archive_title": "Patient Archive",
-        "archive_search": "Search patient name / ID",
+        "archive_title": "Client Archive",
+        "archive_search": "Search client name / ID",
         "archive_latest": "Latest Assessment",
         "archive_load": "Load to Main Panel",
         "archive_empty": "No history yet",
-        "archive_stats_patients": "Patients",
+        "archive_stats_patients": "Clients",
         "archive_stats_assessments": "Assessments",
         "api_title": "DeepSeek Settings",
         "api_hint": "You can use DEEPSEEK_API_KEY from the environment or enter it here.",
-        "patient_code_title": "Patient ID",
-        "patient_code_ph": "Enter patient ID (optional)",
         "report_section": "Therapist Report",
         "report_empty": "Run one analysis to generate a professional report here.",
         "report_download": "Download Report",
         "report_generated": "Report generated",
         "footer": "KinetiQ · 2D posture landmark-based rehab screening · Not medical diagnosis · Powered by MediaPipe + DeepSeek AI",
+        "guide_title": "Photo Guide",
+        "guide_sub": "Standardized photos make results comparable",
+        "guide_front": "Any standing angle",
+        "guide_side": "Any movement frame",
+        "guide_rule_1": "Keep head and feet fully visible",
+        "guide_rule_2": "Keep the camera level",
+        "guide_rule_3": "Use even light and a clear outline",
+        "guide_rule_4": "Add repeated frames when you want cross-checking",
+        "analysis_title": "What Is Analyzed",
+        "analysis_sub": "Local screening with clear limits",
+        "analysis_item_1": "Automatic angle and action recognition",
+        "analysis_item_2": "Shoulder, hip, leg alignment and movement symmetry",
+        "analysis_item_3": "Similar-landmark RAG references",
+        "analysis_item_4": "Markdown / HTML / PDF reports",
+        "privacy_title": "Privacy",
+        "privacy_text": "Photos and records stay on this computer and are not uploaded to Google. Static photos do not diagnose disease or grade ACL risk.",
+        "improvement_title": "Suggested Improvement Priorities",
+        "improvement_sub": "Choose 1–3 objective priorities for the next phase",
+        "improvement_select": "Select priorities",
+        "improvement_generate": "Confirm and Build Plan",
+        "improvement_saved": "The improvement plan was saved to this assessment",
     },
 }
 
@@ -110,37 +160,69 @@ st.set_page_config(page_title="KinetiQ", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
 
 :root {
-    --bg:       #f5efe6;
-    --surface:  #fdfaf6;
-    --card:     #ffffff;
-    --text:     #1c1510;
-    --muted:    #7a6e65;
-    --accent:   #b85c2a;
-    --accent2:  #d4845a;
-    --line:     rgba(28,21,16,0.09);
-    --max:      1100px;
+    --bg:       #e6e0e9;
+    --surface:  #eee9f0;
+    --card:     #e3dce6;
+    --text:     #171319;
+    --muted:    #514957;
+    --accent:   #792f9b;
+    --accent2:  #ae61cd;
+    --accent3:  #e9bdfb;
+    --accent-soft: #d9cce0;
+    --green:    #30c963;
+    --line:     #c8bdcd;
+    --glow:     rgba(121,47,155,0.25);
+    --shadow:   0 2px 8px rgba(45,35,51,0.05), 0 14px 36px rgba(45,35,51,0.08);
+    --max:      1180px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body, [class*="css"] {
-    font-family: 'DM Sans', sans-serif;
+    font-family: 'Space Grotesk', -apple-system, 'PingFang SC', sans-serif;
     background: var(--bg);
     color: var(--text);
 }
 
-.stApp { background: var(--bg); }
+/* Keep all Streamlit-rendered content readable regardless of the active
+   system/app theme. Individual dark buttons are restored below. */
+.stApp,
+.stApp [data-testid="stMarkdownContainer"],
+.stApp [data-testid="stMarkdownContainer"] p,
+.stApp [data-testid="stMarkdownContainer"] li,
+.stApp [data-testid="stMarkdownContainer"] span,
+.stApp [data-testid="stMarkdownContainer"] h1,
+.stApp [data-testid="stMarkdownContainer"] h2,
+.stApp [data-testid="stMarkdownContainer"] h3,
+.stApp [data-testid="stMarkdownContainer"] h4,
+.stApp [data-testid="stCaptionContainer"],
+.stApp [data-testid="stCaptionContainer"] * {
+    color: #171319 !important;
+    -webkit-text-fill-color: #171319 !important;
+    opacity: 1 !important;
+}
+
+.stApp {
+    background:
+        radial-gradient(1000px 480px at 85% -8%, rgba(174,97,205,0.08), transparent 60%),
+        radial-gradient(800px 400px at -5% 8%, rgba(121,47,155,0.06), transparent 55%),
+        var(--bg);
+}
 
 .block-container {
-    padding: 0 !important;
-    max-width: 100% !important;
+    padding: 0 32px 36px !important;
+    max-width: 1580px !important;
 }
 
 [data-testid="stAppViewContainer"] > .main > div {
     padding-top: 0 !important;
+}
+
+[data-testid="stVerticalBlock"] {
+    gap: 0.6rem !important;
 }
 
 /* ── TOPBAR ── */
@@ -148,9 +230,10 @@ html, body, [class*="css"] {
     position: fixed;
     inset: 0 0 auto 0;
     z-index: 999;
-    height: 64px;
-    background: rgba(245,239,230,0.92);
-    backdrop-filter: blur(20px);
+    height: 62px;
+    background: rgba(226,218,231,0.96);
+    backdrop-filter: blur(16px) saturate(180%);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
     border-bottom: 1px solid var(--line);
     display: flex;
     align-items: center;
@@ -159,33 +242,22 @@ html, body, [class*="css"] {
 }
 
 .topbar-logo {
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px;
-    color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    font-size: 21px;
+    font-weight: 700;
     letter-spacing: -0.5px;
+    background: linear-gradient(100deg, #792f9b, #ae61cd 55%, #e9bdfb 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .topbar-logo em {
     font-style: normal;
-    color: var(--accent);
+    -webkit-text-fill-color: #ae61cd;
 }
 
-.topbar-nav {
-    display: flex;
-    gap: 28px;
-    align-items: center;
-}
-
-.topbar-nav a {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--muted);
-    text-decoration: none;
-    transition: color 0.2s;
-}
-.topbar-nav a:hover { color: var(--accent); }
-
-/* lang button override */
+/* lang button */
 .lang-wrap {
     position: fixed;
     top: 14px;
@@ -194,12 +266,12 @@ html, body, [class*="css"] {
 }
 
 .lang-wrap div[data-testid="stButton"] > button {
-    background: transparent !important;
+    background: var(--surface) !important;
     border: 1px solid var(--line) !important;
     color: var(--muted) !important;
     font-size: 12px !important;
     font-weight: 600 !important;
-    padding: 6px 14px !important;
+    padding: 5px 13px !important;
     border-radius: 999px !important;
     width: auto !important;
     box-shadow: none !important;
@@ -212,188 +284,139 @@ html, body, [class*="css"] {
     opacity: 1 !important;
 }
 
-/* ── HERO ── */
-.hero {
-    margin-top: 64px;
-    padding: 48px clamp(20px, 4vw, 64px) 40px;
-    background: var(--bg);
-}
+/* ── WORKSPACE / 步骤卡片 ── */
+.workspace-spacer { height: 82px; }
 
-.hero-inner {
-    max-width: var(--max);
-    margin: 0 auto;
-    display: grid;
-    grid-template-columns: 1.4fr 1fr;
-    gap: 32px;
-    align-items: start;
-    background: var(--surface);
+[data-testid="stVerticalBlockBorderWrapper"] {
+    background: #eee8f0;
     border: 1px solid var(--line);
-    border-radius: 24px;
-    padding: 48px 52px;
-    box-shadow: 0 20px 60px rgba(28,21,16,0.07);
+    border-radius: 22px;
+    box-shadow: var(--shadow);
 }
 
-.hero-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 14px;
-    border-radius: 999px;
-    background: rgba(184,92,42,0.09);
-    border: 1px solid rgba(184,92,42,0.18);
-    color: var(--accent);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    margin-bottom: 20px;
+[data-testid="stVerticalBlockBorderWrapper"] > div {
+    padding: 6px 8px;
 }
 
-.hero-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: clamp(36px, 4.5vw, 56px);
-    line-height: 1.05;
-    letter-spacing: -0.03em;
-    color: var(--text);
-    margin-bottom: 16px;
-    white-space: pre-line;
-}
-
-.hero-sub {
-    font-size: 15px;
-    color: var(--muted);
-    line-height: 1.75;
-    max-width: 46ch;
-    margin-bottom: 24px;
-}
-
-.hero-chips {
+.rail-stack {
+    position: sticky;
+    top: 82px;
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-
-.chip {
-    padding: 7px 14px;
-    border-radius: 999px;
-    border: 1px solid var(--line);
-    background: var(--card);
-    color: var(--muted);
-    font-size: 12px;
-    font-weight: 600;
-}
-
-.stat-col {
-    display: grid;
-    gap: 12px;
-}
-
-.stat-card {
-    background: var(--card);
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    padding: 18px 20px;
-    box-shadow: 0 4px 16px rgba(28,21,16,0.04);
-}
-
-.stat-label {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 6px;
-}
-
-.stat-val {
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px;
-    color: var(--text);
-    letter-spacing: -0.03em;
-}
-
-/* ── FLOW ── */
-.flow {
-    padding: 40px clamp(20px, 4vw, 64px);
-}
-
-.flow-inner {
-    max-width: var(--max);
-    margin: 0 auto;
-}
-
-.section-eyebrow {
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted);
-    opacity: 0.6;
-    margin-bottom: 20px;
-    padding-left: 2px;
-}
-
-.steps {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    flex-direction: column;
     gap: 14px;
 }
 
-.step {
-    background: var(--surface);
+.rail-card {
+    background: #e8e1eb;
     border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 24px 22px;
+    border-radius: 20px;
+    padding: 20px;
+    box-shadow: 0 10px 30px rgba(45,35,51,0.07);
+}
+
+.rail-card.accent {
+    background: linear-gradient(160deg, #d6bee1 0%, #c59bd6 100%);
+    color: #171319;
+    border: 1px solid #b88bca;
+}
+
+.rail-kicker {
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 7px;
+}
+
+.rail-card.accent .rail-kicker { color: #542365 !important; -webkit-text-fill-color: #542365 !important; }
+.rail-title { color: #2d2333 !important; font-size: 19px; font-weight: 750; letter-spacing: -0.02em; }
+.rail-card.accent .rail-title { color: #171319 !important; -webkit-text-fill-color: #171319 !important; }
+.rail-sub { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 6px 0 16px; }
+.rail-card.accent .rail-sub { color: #3f3344 !important; -webkit-text-fill-color: #3f3344 !important; }
+
+.rail-list { display: flex; flex-direction: column; gap: 11px; }
+.rail-item { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; line-height: 1.45; color: #5f5668; }
+.rail-card.accent .rail-item { color: #241d27 !important; -webkit-text-fill-color: #241d27 !important; }
+.rail-dot {
+    width: 22px; height: 22px; flex: 0 0 22px;
+    border-radius: 8px;
+    display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent);
+    font-size: 10px; font-weight: 800;
+}
+.rail-card.accent .rail-dot { background: #efe5f2; color: #542365 !important; -webkit-text-fill-color: #542365 !important; }
+
+.pose-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin: 14px 0 16px; }
+.pose-mini {
+    min-height: 112px;
+    border-radius: 14px;
+    background: linear-gradient(180deg, #faf7fd, #f1e8f7);
+    border: 1px solid #e5d8ed;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: var(--accent); font-size: 11px; font-weight: 700;
+}
+.pose-figure { position: relative; width: 42px; height: 70px; margin-bottom: 6px; }
+.pose-head { position:absolute; width:13px; height:13px; border-radius:50%; background:var(--accent); left:14px; top:0; }
+.pose-body { position:absolute; width:4px; height:29px; border-radius:4px; background:var(--accent); left:19px; top:14px; }
+.pose-arm-l,.pose-arm-r,.pose-leg-l,.pose-leg-r { position:absolute; width:3px; border-radius:3px; background:var(--accent2); transform-origin:top; }
+.pose-arm-l { height:27px; left:18px; top:18px; transform:rotate(32deg); }
+.pose-arm-r { height:27px; left:22px; top:18px; transform:rotate(-32deg); }
+.pose-leg-l { height:30px; left:19px; top:41px; transform:rotate(12deg); }
+.pose-leg-r { height:30px; left:21px; top:41px; transform:rotate(-12deg); }
+.pose-mini.side .pose-arm-l { transform:rotate(4deg); left:20px; }
+.pose-mini.side .pose-arm-r { transform:rotate(-6deg); left:21px; opacity:.45; }
+.pose-mini.side .pose-leg-l { transform:rotate(4deg); }
+.pose-mini.side .pose-leg-r { transform:rotate(-4deg); opacity:.5; }
+
+.privacy-note {
+    margin-top: 14px; padding: 13px 14px;
+    border-radius: 13px; background: rgba(255,255,255,0.34);
+    font-size: 11px; line-height: 1.55; color: #241d27 !important;
+}
+
+.rail-card.accent *, .privacy-note * {
+    color: #171319 !important;
+    -webkit-text-fill-color: #171319 !important;
+    opacity: 1 !important;
+}
+
+.step-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 22px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
 }
 
 .step-num {
-    width: 32px; height: 32px;
-    border-radius: 10px;
-    background: rgba(184,92,42,0.10);
-    color: var(--accent);
-    font-size: 13px;
-    font-weight: 800;
-    display: grid;
-    place-items: center;
-    margin-bottom: 14px;
+    width: 40px;
+    height: 40px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #792f9b, #ae61cd);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 14px rgba(121,47,155,0.30);
+    flex-shrink: 0;
+}
+.step-num, .step-num * {
+    color: #ffffff !important;
+    -webkit-text-fill-color: #ffffff !important;
 }
 
 .step-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 17px;
-    color: var(--text);
-    margin-bottom: 8px;
-}
-
-.step-desc {
-    font-size: 13px;
-    color: var(--muted);
-    line-height: 1.7;
-}
-
-/* ── UPLOAD PANEL ── */
-.upload-section {
-    padding: 0 clamp(20px, 4vw, 64px) 60px;
-}
-
-.upload-panel {
-    max-width: var(--max);
-    margin: 0 auto;
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: 24px;
-    padding: 36px 40px;
-    box-shadow: 0 16px 48px rgba(28,21,16,0.06);
-}
-
-.panel-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 26px;
-    color: var(--text);
+    font-size: 22px;
+    font-weight: 700;
     letter-spacing: -0.03em;
-    margin-bottom: 28px;
-    padding-bottom: 20px;
-    border-bottom: 1px solid var(--line);
+    background: linear-gradient(100deg, #2d2333, #792f9b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .field-label {
@@ -402,94 +425,162 @@ html, body, [class*="css"] {
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--accent);
-    margin-bottom: 8px;
+    margin-bottom: 4px;
 }
 
 .field-tip {
     font-size: 12px;
     color: var(--muted);
-    margin-top: 8px;
+    margin-top: 5px;
     line-height: 1.5;
 }
 
 .divider {
     height: 1px;
     background: var(--line);
-    margin: 28px 0;
+    margin: 20px 0;
 }
 
 /* inputs */
+/* Streamlit may inherit white widget labels from the active app theme. Force
+   high-contrast text for every light form surface. */
+[data-testid="stWidgetLabel"],
+[data-testid="stWidgetLabel"] p,
+[data-testid="stTextInput"] label,
+[data-testid="stTextInput"] label p,
+[data-testid="stNumberInput"] label,
+[data-testid="stNumberInput"] label p,
+[data-testid="stSelectbox"] label,
+[data-testid="stSelectbox"] label p,
+[data-testid="stMultiSelect"] label,
+[data-testid="stMultiSelect"] label p,
+[data-testid="stFileUploader"] label,
+[data-testid="stFileUploader"] label p {
+    color: #4b3e55 !important;
+    -webkit-text-fill-color: #4b3e55 !important;
+    opacity: 1 !important;
+    font-weight: 650 !important;
+}
+
 div[data-testid="stTextInput"] input {
     background: var(--card) !important;
-    border: 1px solid var(--line) !important;
+    border: 1px solid #d7ccdf !important;
     border-radius: 12px !important;
     color: var(--text) !important;
     font-size: 14px !important;
-    font-family: 'DM Sans', sans-serif !important;
-    padding: 12px 16px !important;
+    font-family: 'Space Grotesk', sans-serif !important;
+    padding: 11px 14px !important;
+}
+div[data-testid="stTextInput"] input::placeholder,
+[data-testid="stNumberInput"] input::placeholder {
+    color: #8b8093 !important;
+    -webkit-text-fill-color: #8b8093 !important;
+    opacity: 1 !important;
 }
 div[data-testid="stTextInput"] input:focus {
     border-color: var(--accent) !important;
-    box-shadow: 0 0 0 3px rgba(184,92,42,0.10) !important;
+    box-shadow: 0 0 0 3px rgba(121,47,155,0.12) !important;
+}
+
+[data-testid="stSelectbox"] > div > div,
+[data-testid="stNumberInput"] input,
+[data-testid="stMultiSelect"] > div > div {
+    background: var(--card) !important;
+    border-color: #d7ccdf !important;
+    color: var(--text) !important;
+}
+
+[data-testid="stSelectbox"] [data-baseweb="select"] *,
+[data-testid="stMultiSelect"] [data-baseweb="select"] *,
+[data-testid="stNumberInput"] input {
+    color: #2d2333 !important;
+    -webkit-text-fill-color: #2d2333 !important;
+    opacity: 1 !important;
+}
+
+[data-testid="stNumberInput"] button {
+    background: #cec2d3 !important;
+    border-color: #d7ccdf !important;
+    color: #5a4268 !important;
+}
+
+[data-testid="stNumberInput"] button svg {
+    fill: #5a4268 !important;
+    color: #5a4268 !important;
 }
 
 [data-testid="stFileUploader"] section {
-    background: var(--card) !important;
-    border: 1.5px dashed rgba(28,21,16,0.15) !important;
+    background: #ddd5e1 !important;
+    border: 2px dashed #d8cce4 !important;
     border-radius: 14px !important;
 }
+[data-testid="stFileUploader"] section,
+[data-testid="stFileUploader"] section * {
+    color: #4b3e55 !important;
+    -webkit-text-fill-color: #4b3e55 !important;
+    opacity: 1 !important;
+}
+[data-testid="stFileUploader"] section button {
+    background: #cec1d4 !important;
+    border: 1px solid #bfa9ce !important;
+    color: #5f2b78 !important;
+    font-weight: 700 !important;
+}
 [data-testid="stFileUploader"] section:hover {
-    border-color: var(--accent) !important;
+    border-color: var(--accent2) !important;
 }
 
 /* CTA button */
-.cta-wrap div[data-testid="stButton"] > button {
-    background: linear-gradient(135deg, var(--accent), var(--accent2)) !important;
+div[data-testid="stButton"] > button[kind="primary"] {
+    background: linear-gradient(135deg, #792f9b, #ae61cd 60%, #c084fc) !important;
     color: white !important;
     border: none !important;
     border-radius: 14px !important;
     font-weight: 700 !important;
-    font-size: 15px !important;
-    padding: 14px 24px !important;
+    font-size: 16px !important;
+    padding: 14px 28px !important;
     width: 100% !important;
-    box-shadow: 0 10px 32px rgba(184,92,42,0.22) !important;
+    box-shadow: 0 6px 20px rgba(121,47,155,0.35) !important;
     letter-spacing: 0.2px !important;
+    transition: all 0.2s !important;
 }
-.cta-wrap div[data-testid="stButton"] > button:hover {
-    opacity: 0.9 !important;
+div[data-testid="stButton"] > button[kind="primary"]:hover {
+    box-shadow: 0 8px 28px rgba(121,47,155,0.45) !important;
     transform: translateY(-1px) !important;
+    opacity: 1 !important;
 }
-.cta-wrap div[data-testid="stButton"] > button:disabled {
-    background: rgba(28,21,16,0.08) !important;
-    color: var(--muted) !important;
+div[data-testid="stButton"] > button[kind="primary"]:disabled {
+    background: #e9e4f0 !important;
+    color: #a89fb0 !important;
     box-shadow: none !important;
 }
 
 .status-box {
-    padding: 14px 18px;
+    padding: 13px 16px;
     border-radius: 12px;
-    background: rgba(184,92,42,0.07);
-    border: 1px solid rgba(184,92,42,0.14);
-    color: var(--muted);
+    background: #d9cfe0;
+    border: 1px solid #bdaec6;
+    color: #241d27;
     font-size: 13px;
-    line-height: 1.6;
-    margin-bottom: 16px;
+    line-height: 1.5;
+    margin-bottom: 12px;
 }
 
 .status-box.ready {
-    background: rgba(24,169,87,0.07);
-    border-color: rgba(24,169,87,0.18);
-    color: #1a7a42;
+    background: rgba(48,201,99,0.09);
+    border-color: rgba(48,201,99,0.25);
+    color: #1a9c4b;
 }
 
+/* ── REPORT ── */
 .report-shell {
     max-width: var(--max);
-    margin: 28px auto 0;
-    background: var(--surface);
+    margin: 20px auto 0;
+    background: #eee8f0;
     border: 1px solid var(--line);
-    border-radius: 24px;
-    padding: 32px 36px;
-    box-shadow: 0 16px 48px rgba(28,21,16,0.06);
+    border-radius: 22px;
+    padding: 26px 30px;
+    box-shadow: var(--shadow);
 }
 
 .report-head {
@@ -497,55 +588,46 @@ div[data-testid="stTextInput"] input:focus {
     justify-content: space-between;
     gap: 18px;
     align-items: flex-start;
-    margin-bottom: 22px;
-    padding-bottom: 18px;
+    margin-bottom: 18px;
+    padding-bottom: 15px;
     border-bottom: 1px solid var(--line);
 }
 
 .report-title {
-    font-family: 'DM Serif Display', serif;
-    font-size: 26px;
-    color: var(--text);
+    font-size: 22px;
+    font-weight: 700;
     letter-spacing: -0.03em;
+    background: linear-gradient(100deg, #2d2333, #792f9b);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
 }
 
 .report-sub {
-    margin-top: 8px;
+    margin-top: 6px;
     color: var(--muted);
     line-height: 1.6;
     font-size: 13px;
     max-width: 64ch;
 }
 
-.report-meta {
-    display: grid;
-    gap: 8px;
-    min-width: 220px;
-}
-
-.meta-pill {
-    background: rgba(184,92,42,0.08);
-    border: 1px solid rgba(184,92,42,0.12);
-    color: var(--accent);
-    border-radius: 999px;
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 700;
-    text-align: center;
-}
-
 .report-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 12px;
-    margin-bottom: 18px;
+    margin-bottom: 14px;
 }
 
 .report-card {
-    background: var(--card);
+    background: #dfd7e3;
     border: 1px solid var(--line);
     border-radius: 16px;
-    padding: 16px 18px;
+    padding: 15px 16px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.report-card:hover {
+    border-color: rgba(121,47,155,0.35);
+    box-shadow: 0 6px 18px rgba(121,47,155,0.10);
 }
 
 .report-card-label {
@@ -554,23 +636,48 @@ div[data-testid="stTextInput"] input:focus {
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    margin-bottom: 8px;
+    margin-bottom: 6px;
 }
 
 .report-card-value {
     color: var(--text);
-    font-family: 'DM Serif Display', serif;
-    font-size: 22px;
+    font-size: 20px;
+    font-weight: 600;
     letter-spacing: -0.03em;
 }
 
+.improvement-card {
+    height: 100%;
+    min-height: 210px;
+    background: linear-gradient(160deg, #e7e0ea 0%, #dbd1e0 100%);
+    border: 1px solid #bfaec7;
+    border-radius: 17px;
+    padding: 17px;
+    box-shadow: 0 8px 22px rgba(121,47,155,0.07);
+}
+.improvement-top { display:flex; justify-content:space-between; gap:8px; align-items:center; margin-bottom:10px; }
+.improvement-priority { padding:4px 8px; border-radius:999px; background:var(--accent-soft); color:var(--accent); font-size:10px; font-weight:800; }
+.improvement-title { font-size:16px; font-weight:750; color:var(--text); line-height:1.3; }
+.improvement-summary { font-size:12px; line-height:1.6; color:var(--muted); margin-bottom:10px; }
+.improvement-evidence { font-size:11px; line-height:1.55; color:#655a70; padding-top:9px; border-top:1px solid var(--line); }
+.confirmed-plan { background:#ddd2e2; border:1px solid #bba9c5; border-radius:16px; padding:15px 17px; margin:8px 0 18px; }
+
 .report-markdown {
-    background: rgba(255,255,255,0.75);
+    background: #ded6e2;
     border: 1px solid var(--line);
-    border-radius: 18px;
-    padding: 20px 22px;
+    border-radius: 16px;
+    padding: 18px 20px;
     color: var(--text);
     line-height: 1.8;
+}
+
+.report-markdown,
+.report-markdown *,
+[data-testid="stMarkdownContainer"] strong,
+[data-testid="stMarkdownContainer"] code {
+    color: #171319 !important;
+    -webkit-text-fill-color: #171319 !important;
+    opacity: 1 !important;
 }
 
 .report-markdown h1,
@@ -578,13 +685,7 @@ div[data-testid="stTextInput"] input:focus {
 .report-markdown h3 {
     margin-top: 0.8em;
     margin-bottom: 0.4em;
-}
-
-.report-actions {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-top: 18px;
+    color: #792f9b;
 }
 
 .archive-summary {
@@ -594,20 +695,34 @@ div[data-testid="stTextInput"] input:focus {
     padding: 6px 0 0;
 }
 
+/* ── SIDEBAR ── */
+[data-testid="stSidebar"] {
+    background: #ddd5e1;
+    border-right: 1px solid var(--line);
+}
+
 /* ── FOOTER ── */
 .footer {
-    padding: 20px clamp(20px, 4vw, 64px) 32px;
+    padding: 18px clamp(20px, 4vw, 64px) 26px;
     text-align: center;
     font-size: 12px;
     color: var(--muted);
-    opacity: 0.6;
-    border-top: 1px solid var(--line);
+    opacity: 0.7;
 }
 
 @media (max-width: 900px) {
-    .hero-inner { grid-template-columns: 1fr; padding: 32px 24px; }
-    .steps { grid-template-columns: 1fr; }
     .topbar-nav { display: none; }
+    .block-container { padding: 0 16px 28px !important; }
+    .workspace-spacer { height: 74px; }
+    .rail-stack { position: static; }
+    .rail-card { padding: 16px; }
+    .step-title { font-size: 19px; }
+    [data-testid="stHorizontalBlock"] { flex-wrap: wrap !important; }
+    [data-testid="column"] {
+        flex: 1 1 100% !important;
+        width: 100% !important;
+        min-width: 100% !important;
+    }
 }
 </style>
 """, unsafe_allow_html=True)
@@ -616,23 +731,14 @@ div[data-testid="stTextInput"] input:focus {
 st.markdown(f"""
 <div class="topbar">
     <div class="topbar-logo">Kineti<em>Q</em></div>
-    <div class="topbar-nav">
-        <a href="#">{t['nav_home']}</a>
-        <a href="#">{t['nav_flow']}</a>
-        <a href="#">{t['nav_upload']}</a>
-        <a href="#">{t['nav_about']}</a>
-    </div>
 </div>
 """, unsafe_allow_html=True)
 
-# lang button (fixed top right)
-st.markdown('<div class="lang-wrap">', unsafe_allow_html=True)
-if st.button(t["lang_btn"], key="lang_switch"):
-    st.session_state.lang = "en" if st.session_state.lang == "zh" else "zh"
-    st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
-
 with st.sidebar:
+    if st.button(t["lang_btn"], key="lang_switch", use_container_width=True):
+        st.session_state.lang = "en" if st.session_state.lang == "zh" else "zh"
+        st.rerun()
+    st.markdown("---")
     st.markdown(f"### {t['archive_title']}")
     search_query = st.text_input(t["archive_search"], key="archive_search_query")
     store = st.session_state.store
@@ -676,176 +782,273 @@ with st.sidebar:
     )
     st.caption(t["api_hint"])
 
-# ── HERO ──
-st.markdown(f"""
-<div class="hero">
-    <div class="hero-inner">
-        <div>
-            <div class="hero-badge">⚡ {t['badge']}</div>
-            <h1 class="hero-title">{t['title']}</h1>
-            <p class="hero-sub">{t['subtitle']}</p>
-            <div class="hero-chips">
-                <span class="chip">{t['chip1']}</span>
-                <span class="chip">{t['chip2']}</span>
-                <span class="chip">{t['chip3']}</span>
-            </div>
-        </div>
-        <div class="stat-col">
-            <div class="stat-card">
-                <div class="stat-label">{t['stat1_label']}</div>
-                <div class="stat-val">{t['stat1_val']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">{t['stat2_label']}</div>
-                <div class="stat-val">{t['stat2_val']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">{t['stat3_label']}</div>
-                <div class="stat-val">{t['stat3_val']}</div>
-            </div>
-        </div>
+# ── THREE-COLUMN WORKSPACE ──
+st.markdown('<div class="workspace-spacer"></div>', unsafe_allow_html=True)
+guide_col, form_col, info_col = st.columns([1.05, 3.15, 1.05], gap="large", vertical_alignment="top")
+
+with guide_col:
+    st.markdown(
+        f"""
+<div class="rail-stack">
+  <div class="rail-card">
+    <div class="rail-kicker">01 · Capture</div>
+    <div class="rail-title">{t['guide_title']}</div>
+    <div class="rail-sub">{t['guide_sub']}</div>
+    <div class="pose-pair">
+      <div class="pose-mini">
+        <div class="pose-figure"><i class="pose-head"></i><i class="pose-body"></i><i class="pose-arm-l"></i><i class="pose-arm-r"></i><i class="pose-leg-l"></i><i class="pose-leg-r"></i></div>
+        {t['guide_front']}
+      </div>
+      <div class="pose-mini side">
+        <div class="pose-figure"><i class="pose-head"></i><i class="pose-body"></i><i class="pose-arm-l"></i><i class="pose-arm-r"></i><i class="pose-leg-l"></i><i class="pose-leg-r"></i></div>
+        {t['guide_side']}
+      </div>
     </div>
-</div>
-""", unsafe_allow_html=True)
-
-# ── FLOW ──
-st.markdown(f"""
-<div class="flow">
-    <div class="flow-inner">
-        <div class="section-eyebrow">{t['flow_title']}</div>
-        <div class="steps">
-            <div class="step">
-                <div class="step-num">01</div>
-                <div class="step-title">{t['s1_title']}</div>
-                <div class="step-desc">{t['s1_desc']}</div>
-            </div>
-            <div class="step">
-                <div class="step-num">02</div>
-                <div class="step-title">{t['s2_title']}</div>
-                <div class="step-desc">{t['s2_desc']}</div>
-            </div>
-            <div class="step">
-                <div class="step-num">03</div>
-                <div class="step-title">{t['s3_title']}</div>
-                <div class="step-desc">{t['s3_desc']}</div>
-            </div>
-        </div>
+    <div class="rail-list">
+      <div class="rail-item"><span class="rail-dot">1</span><span>{t['guide_rule_1']}</span></div>
+      <div class="rail-item"><span class="rail-dot">2</span><span>{t['guide_rule_2']}</span></div>
+      <div class="rail-item"><span class="rail-dot">3</span><span>{t['guide_rule_3']}</span></div>
+      <div class="rail-item"><span class="rail-dot">4</span><span>{t['guide_rule_4']}</span></div>
     </div>
+  </div>
 </div>
-""", unsafe_allow_html=True)
+""",
+        unsafe_allow_html=True,
+    )
 
-# ── UPLOAD PANEL ──
-st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-st.markdown(f'<div class="upload-panel">', unsafe_allow_html=True)
-st.markdown(f'<div class="panel-title">{t["upload_title"]}</div>', unsafe_allow_html=True)
+with info_col:
+    st.markdown(
+        f"""
+<div class="rail-stack">
+  <div class="rail-card accent">
+    <div class="rail-kicker">02 · Insight</div>
+    <div class="rail-title">{t['analysis_title']}</div>
+    <div class="rail-sub">{t['analysis_sub']}</div>
+    <div class="rail-list">
+      <div class="rail-item"><span class="rail-dot">✓</span><span>{t['analysis_item_1']}</span></div>
+      <div class="rail-item"><span class="rail-dot">✓</span><span>{t['analysis_item_2']}</span></div>
+      <div class="rail-item"><span class="rail-dot">✓</span><span>{t['analysis_item_3']}</span></div>
+      <div class="rail-item"><span class="rail-dot">✓</span><span>{t['analysis_item_4']}</span></div>
+    </div>
+    <div class="privacy-note"><strong>{t['privacy_title']}</strong><br>{t['privacy_text']}</div>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-# patient
-st.markdown(f'<div class="field-label">{t["profile_title"]}</div>', unsafe_allow_html=True)
-patient_name = st.text_input("p", placeholder=t["patient_ph"], label_visibility="collapsed")
-patient_code = st.text_input(
-    "patient_code",
-    placeholder=t["patient_code_ph"],
-    label_visibility="collapsed",
-)
+with form_col:
+    with st.container(border=True):
+        st.markdown(f'<div class="step-head"><div class="step-num">1</div><div class="step-title">{t["profile_title"]}</div></div>', unsafe_allow_html=True)
 
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        col_name, col_code = st.columns([2, 1])
+        with col_name:
+            patient_name = st.text_input(t["name_label"], placeholder=t["name_ph"], key="member_name")
+        with col_code:
+            patient_code = st.text_input(t["code_label"], placeholder=t["code_ph"], key="member_code")
 
-# uploads
-col1, col2 = st.columns(2, gap="large")
-with col1:
-    st.markdown(f'<div class="field-label">{t["front_label"]}</div>', unsafe_allow_html=True)
-    front_file = st.file_uploader(t["upload_hint"], type=["jpg","jpeg","png"], key="front")
-    st.markdown(f'<div class="field-tip">{t["front_tip"]}</div>', unsafe_allow_html=True)
-with col2:
-    st.markdown(f'<div class="field-label">{t["side_label"]}</div>', unsafe_allow_html=True)
-    side_file = st.file_uploader(t["upload_hint"], type=["jpg","jpeg","png"], key="side")
-    st.markdown(f'<div class="field-tip">{t["side_tip"]}</div>', unsafe_allow_html=True)
+        col_g, col_a, col_h = st.columns([1, 1, 1])
+        with col_g:
+            gender = st.selectbox(t["gender_label"], t["gender_options"], key="gender")
+        with col_a:
+            age = st.number_input(t["age_label"], min_value=1, max_value=120, value=None, step=1, key="age")
+        with col_h:
+            height = st.number_input(t["height_label"], min_value=80, max_value=250, value=None, step=1, key="height")
 
-st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        col_w, col_o, col_act = st.columns([1, 1, 1])
+        with col_w:
+            weight = st.number_input(t["weight_label"], min_value=20, max_value=300, value=None, step=1, key="weight")
+        with col_o:
+            occupation = st.selectbox(t["occupation_label"], t["occupation_options"], key="occupation")
+        with col_act:
+            activity = st.selectbox(t["activity_label"], t["activity_options"], key="activity")
 
-# CTA
-ready = front_file and side_file
-status_class = "ready" if ready else ""
-status_text = t["ready"] if ready else t["waiting"]
-st.markdown(f'<div class="status-box {status_class}">{status_text}</div>', unsafe_allow_html=True)
+        concerns = []
+        col_pain, col_injury = st.columns([1, 1])
+        with col_pain:
+            pain_areas = st.text_input(t["pain_label"], placeholder=t["pain_ph"], key="pain")
+        with col_injury:
+            injury_history = st.text_input(t["injury_label"], placeholder=t["injury_ph"], key="injury")
 
-st.markdown('<div class="cta-wrap">', unsafe_allow_html=True)
-col_l, col_c, col_r = st.columns([1, 4, 1])
-with col_c:
-    if st.button(t["analyze"], key="cta", disabled=not ready):
-        with st.spinner("AI 分析中..."):
-            result = process_assessment(
-                patient_name=patient_name,
-                patient_code=patient_code,
-                lang=st.session_state.lang,
-                front_file=front_file,
-                side_file=side_file,
-                deepseek_key=st.session_state.deepseek_key,
-            )
-            assessment = result["assessment"]
-            st.session_state.store = commit_assessment(result["profile"], assessment)
-            st.session_state.current_report = assessment
-            st.session_state.selected_patient_key = assessment["patient_key"]
-            st.success(t["report_generated"])
-st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="step-head"><div class="step-num">2</div><div class="step-title">{t["front_label"]}</div></div>', unsafe_allow_html=True)
+        images = st.file_uploader(
+            t["upload_hint"],
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="images",
+        )
+        st.markdown(f'<div class="field-tip">{t["front_tip"]}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
 
-st.markdown('</div></div>', unsafe_allow_html=True)
+        ready = bool(images)
+        status_class = "ready" if ready else ""
+        status_text = t["ready"] if ready else t["waiting"]
+        st.markdown(f'<div class="status-box {status_class}">{status_text}</div>', unsafe_allow_html=True)
+
+        if st.button(t["analyze"], key="cta", disabled=not ready, use_container_width=True, type="primary"):
+            with st.spinner("AI 分析中..."):
+                try:
+                    result = process_assessment(
+                        patient_name=patient_name,
+                        patient_code=patient_code,
+                        lang=st.session_state.lang,
+                        images=images,
+                        gender=gender,
+                        age=age,
+                        height=height,
+                        weight=weight,
+                        occupation=occupation,
+                        activity=activity,
+                        concerns=concerns,
+                        pain_areas=pain_areas,
+                        injury_history=injury_history,
+                        deepseek_key=st.session_state.deepseek_key,
+                    )
+                except AssessmentInputError as exc:
+                    st.error(str(exc))
+                except Exception:
+                    st.error("分析服务暂时不可用，请重启应用后重试。")
+                else:
+                    assessment = result["assessment"]
+                    st.session_state.store = commit_assessment(result["profile"], assessment)
+                    st.session_state.current_report = assessment
+                    st.session_state.selected_patient_key = assessment["patient_key"]
+                    st.success(t["report_generated"])
 
 report = st.session_state.current_report
-st.markdown('<div class="report-shell">', unsafe_allow_html=True)
-st.markdown(f'<div class="report-head"><div><div class="report-title">{t["report_section"]}</div><div class="report-sub">{t["subtitle"]}</div></div></div>', unsafe_allow_html=True)
+st.markdown('<div style="height:28px"></div>', unsafe_allow_html=True)
+st.markdown(f'<div class="step-head"><div class="step-num">3</div><div><div class="step-title">{t["report_section"]}</div><div class="report-sub">{t["subtitle"]}</div></div></div>', unsafe_allow_html=True)
 
 if report:
     summary = report.get("summary", {})
     acl = summary.get("acl_risk", {})
     kinetic_chain = summary.get("kinetic_chain", [])
     recommendations = summary.get("recommendations", [])
+    coverage_display = summary.get("view_coverage", {}).get("label_zh", "未知")
+    movement_display = summary.get("movement_screening", {}).get("label_zh", "待评估")
     muscle_map = report.get("muscle_map", {})
     dominant_targets = muscle_map.get("dominant_targets", [])
     primary_muscles = muscle_map.get("primary_muscles", [])
+    acl_display = acl.get("label_zh", "未评估（需动态测试）")
 
     st.markdown(
         f"""
 <div class="report-grid">
     <div class="report-card">
-        <div class="report-card-label">ACL 风险 / ACL Risk</div>
-        <div class="report-card-value">{acl.get('label_zh', 'Low')} · {acl.get('score', 0):.2f}</div>
+        <div class="report-card-label">照片覆盖 / Capture Coverage</div>
+        <div class="report-card-value">{coverage_display}</div>
     </div>
     <div class="report-card">
-        <div class="report-card-label">肌群推断 / Muscle Hypothesis</div>
-        <div class="report-card-value">{dominant_targets[0] if dominant_targets else 'None'}</div>
+        <div class="report-card-label">主要观察 / Key Observation</div>
+        <div class="report-card-value">{movement_display}</div>
     </div>
     <div class="report-card">
-        <div class="report-card-label">动力链 / Chain</div>
-        <div class="report-card-value">{len(kinetic_chain)} 条要点</div>
+        <div class="report-card-label">验证优先级 / Priorities</div>
+        <div class="report-card-value">{len(report.get('recommendation_options', []))} 项</div>
     </div>
 </div>
 """,
         unsafe_allow_html=True,
         )
 
+    improvement_options = report.get("recommendation_options", [])
+    if improvement_options:
+        st.markdown(f"### {t['improvement_title']}")
+        st.caption(t["improvement_sub"])
+        improvement_cols = st.columns(len(improvement_options), gap="medium")
+        for option_col, option in zip(improvement_cols, improvement_options):
+            evidence_html = "<br>".join(
+                f"• {html.escape(str(item))}" for item in option.get("evidence", [])[:3]
+            )
+            with option_col:
+                st.markdown(
+                    f"""
+<div class="improvement-card">
+  <div class="improvement-top">
+    <div class="improvement-title">{html.escape(option.get('title', ''))}</div>
+    <span class="improvement-priority">{html.escape(option.get('priority', ''))}</span>
+  </div>
+  <div class="improvement-summary">{html.escape(option.get('summary', ''))}</div>
+  <div class="improvement-evidence">{evidence_html}</div>
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+
+        option_ids = [item["id"] for item in improvement_options]
+        option_titles = {item["id"]: item["title"] for item in improvement_options}
+        confirmed_plan = report.get("confirmed_plan", {})
+        default_ids = [item for item in confirmed_plan.get("selected_ids", []) if item in option_ids]
+        selected_ids = st.multiselect(
+            t["improvement_select"],
+            option_ids,
+            default=default_ids,
+            format_func=lambda option_id: option_titles.get(option_id, option_id),
+            max_selections=3,
+            key=f"improvement_{report.get('record_id', 'current')}",
+        )
+        if st.button(
+            t["improvement_generate"],
+            key=f"confirm_improvement_{report.get('record_id', 'current')}",
+            disabled=not selected_ids,
+            use_container_width=True,
+        ):
+            report = apply_confirmed_plan(report, selected_ids, lang=st.session_state.lang)
+            replace_assessment(st.session_state.store, report)
+            save_store(st.session_state.store)
+            st.session_state.current_report = report
+            st.success(t["improvement_saved"])
+
+        if report.get("confirmed_plan", {}).get("lines"):
+            with st.container(border=True):
+                st.markdown(f"#### {report['report_sections'].get('confirmed_plan_title', '已确认改善计划')}")
+                for line in report["confirmed_plan"]["lines"]:
+                    st.markdown(f"- {line}")
+
     st.markdown("### 标记骨架 / Annotated Views")
-    img_col1, img_col2 = st.columns(2, gap="large")
+    image_results = report.get("image_results", [])
+    if image_results:
+        for row_start in range(0, len(image_results), 2):
+            cols = st.columns(2, gap="large")
+            for offset in range(2):
+                index = row_start + offset
+                if index >= len(image_results):
+                    break
+                with cols[offset]:
+                    result = image_results[index]
+                    annotated_path = result.get("annotated_path")
+                    source_path = result.get("source_path", "")
+                    detected_view = result.get("detected_view", "auto")
+                    caption = f"图 {index + 1} · 识别视角 {detected_view}"
+                    if annotated_path and os.path.exists(annotated_path):
+                        st.image(annotated_path, caption=caption, use_container_width=True)
+                    elif source_path and os.path.exists(source_path):
+                        st.image(source_path, caption=f"{caption} · 原始图片 / Original", use_container_width=True)
+                    else:
+                        st.info("暂无可显示图片")
+    else:
+        def show_pose_image(col, result_key: str, fallback_key: str, caption: str):
+            with col:
+                result = report.get(result_key, {})
+                annotated_path = result.get("annotated_path")
+                fallback_path = report.get(fallback_key, "")
+                if annotated_path and os.path.exists(annotated_path):
+                    st.image(annotated_path, caption=caption, use_container_width=True)
+                elif fallback_path and os.path.exists(fallback_path):
+                    st.image(fallback_path, caption=f"{caption} · 原始图片 / Original", use_container_width=True)
+                    st.caption("当前档案还没有标记图，重新分析一次后会生成。")
+                else:
+                    st.info("暂无可显示图片")
 
-    def show_pose_image(col, result_key: str, fallback_key: str, caption: str):
-        with col:
-            result = report.get(result_key, {})
-            annotated_path = result.get("annotated_path")
-            fallback_path = report.get(fallback_key, "")
-            if annotated_path and os.path.exists(annotated_path):
-                st.image(annotated_path, caption=caption, use_container_width=True)
-            elif fallback_path and os.path.exists(fallback_path):
-                st.image(fallback_path, caption=f"{caption} · 原始图片 / Original", use_container_width=True)
-                st.caption("当前档案还没有标记图，重新分析一次后会生成。")
-            else:
-                st.info("暂无可显示图片")
-
-    show_pose_image(img_col1, "front_result", "front_path", "Front annotated view")
-    show_pose_image(img_col2, "side_result", "side_path", "Side annotated view")
+        img_col1, img_col2 = st.columns(2, gap="large")
+        show_pose_image(img_col1, "front_result", "front_path", "Front annotated view")
+        show_pose_image(img_col2, "side_result", "side_path", "Side annotated view")
 
     col_a, col_b = st.columns([3, 1])
     with col_a:
-        st.markdown(f'<div class="report-markdown">{report.get("report_md", "")}</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown(report.get("report_md", ""))
     with col_b:
         muscle_preview = "".join(
             f"<div class='archive-summary'><strong>{item.get('muscle', '')}</strong><br>{item.get('reason', '')}<br><span style='opacity:.8'>Priority: {item.get('priority', '')}</span></div>"
@@ -909,8 +1112,26 @@ if report:
         )
 else:
     st.markdown(f'<div class="status-box">{t["report_empty"]}</div>', unsafe_allow_html=True)
-
-st.markdown('</div>', unsafe_allow_html=True)
+    if st.session_state.lang == "zh":
+        placeholders = [
+            ("ACL 筛查", "需动态动作测试，静态照片不单独评估损伤风险"),
+            ("肌群推断", "根据姿态偏移推测可能相关的肌群与动作模式"),
+            ("动力链分析", "躯干、骨盆、下肢协同与代偿观察"),
+        ]
+    else:
+        placeholders = [
+            ("ACL Screening", "Requires dynamic testing, not inferred from static photos"),
+            ("Muscle Hypothesis", "Possible related muscle groups from posture patterns"),
+            ("Kinetic Chain", "Trunk, pelvis and lower-limb coordination"),
+        ]
+    pcols = st.columns(3, gap="medium")
+    for pcol, (title, desc) in zip(pcols, placeholders):
+        with pcol:
+            st.markdown(
+                f'<div class="report-card"><div class="report-card-label">{title}</div>'
+                f'<div class="archive-summary">{desc}</div></div>',
+                unsafe_allow_html=True,
+            )
 
 # ── FOOTER ──
 st.markdown(f'<div class="footer">{t["footer"]}</div>', unsafe_allow_html=True)

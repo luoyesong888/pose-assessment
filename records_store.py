@@ -6,6 +6,10 @@ from typing import Any, Dict, List, Optional
 
 DATA_DIR = Path(__file__).with_name("data")
 STORE_FILE = DATA_DIR / "patient_records.json"
+PROFILE_FIELDS = (
+    "gender", "age", "height", "weight", "occupation", "activity",
+    "concerns", "pain_areas", "injury_history",
+)
 
 
 def ensure_store_dir() -> None:
@@ -43,6 +47,7 @@ def upsert_assessment(store: Dict[str, Any], patient_profile: Dict[str, Any], as
         "patient_code": patient_profile.get("patient_code", ""),
         "created_at": patient_profile.get("created_at"),
         "updated_at": assessment.get("created_at"),
+        **{field: patient_profile.get(field) for field in PROFILE_FIELDS},
         "assessments": [],
     }
 
@@ -51,6 +56,10 @@ def upsert_assessment(store: Dict[str, Any], patient_profile: Dict[str, Any], as
         patient_entry["patient_name"] = patient_profile.get("patient_name", patient_entry.get("patient_name", ""))
         patient_entry["patient_code"] = patient_profile.get("patient_code", patient_entry.get("patient_code", ""))
         patient_entry["updated_at"] = assessment.get("created_at")
+        for field in PROFILE_FIELDS:
+            value = patient_profile.get(field)
+            if value not in (None, "", []):
+                patient_entry[field] = value
     else:
         store.setdefault("patients", []).append(patient_entry)
 
@@ -80,3 +89,18 @@ def search_patients(store: Dict[str, Any], query: str = "") -> List[Dict[str, An
 
 def total_assessments(store: Dict[str, Any]) -> int:
     return sum(len(patient.get("assessments", [])) for patient in store.get("patients", []))
+
+
+def replace_assessment(store: Dict[str, Any], assessment: Dict[str, Any]) -> bool:
+    """按 patient_key + record_id 原位更新评估记录。"""
+    patient_key = assessment.get("patient_key")
+    record_id = assessment.get("record_id")
+    for patient in store.get("patients", []):
+        if patient.get("patient_key") != patient_key:
+            continue
+        for index, existing in enumerate(patient.get("assessments", [])):
+            if existing.get("record_id") == record_id:
+                patient["assessments"][index] = assessment
+                patient["updated_at"] = assessment.get("created_at", patient.get("updated_at"))
+                return True
+    return False

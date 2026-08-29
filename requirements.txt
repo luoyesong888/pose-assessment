@@ -1,0 +1,9 @@
+streamlit>=1.62.0
+mediapipe==0.10.35
+opencv-python>=5.0.0
+pillow>=12.0.0
+requests>=2.34.0
+modelscope>=1.39.1
+datasets>=5.0.1
+addict>=2.4.0
+oss2>=2.19.1

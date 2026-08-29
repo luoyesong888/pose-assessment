@@ -2,7 +2,7 @@
 
 **AI-powered sports rehabilitation screening for therapists**
 
-KinetiQ turns front and side posture photos into a structured rehab workflow: local pose landmark analysis, ACL risk stratification, muscle-function hypotheses, DeepSeek-generated therapist reports, patient archives, and HTML/PDF export.
+KinetiQ turns front, back, side, forward-bend, and other pose photos into a structured rehab workflow: automatic capture classification, descriptive landmark analysis, cautious muscle-function hypotheses, DeepSeek-generated therapist reports, patient archives, and HTML/PDF export. Static photos do not receive an ACL risk grade.
 
 Choose your preferred language:
 
@@ -22,7 +22,7 @@ Most rehab demos stop at keypoint detection. KinetiQ goes one step further:
 
 - Front and side photo upload
 - Annotated pose images saved with each assessment
-- ACL risk assessment and kinetic-chain summary
+- ACL screening limits and kinetic-chain observations
 - Muscle-function hypothesis mapping
 - DeepSeek AI report generation with local fallback
 - Patient archive and search
@@ -33,7 +33,7 @@ Most rehab demos stop at keypoint detection. KinetiQ goes one step further:
 ```mermaid
 flowchart LR
     A[Upload front + side photos] --> B[MediaPipe landmark detection]
-    B --> C[Pose metrics + ACL risk + kinetic chain]
+    B --> C[Quality gate + descriptive pose metrics]
     C --> D[Muscle function hypothesis]
     D --> E[DeepSeek therapist report]
     E --> F[Patient archive + HTML/PDF export]
